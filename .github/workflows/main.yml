@@ -7,10 +7,10 @@ on:
       ipa_url:
         description: "Direct URL to Decrypted IPA file"
         type: string
-        required: false
+        required: true
       display_name:
         description: "App Name (Optional)"
-        default: "TwitchPlus"
+        default: "Twitch"
         required: false
         type: string
       bundle_id:
@@ -46,17 +46,6 @@ jobs:
           fi
           echo "id=$(cat control | grep "Package:" | cut -d' ' -f2)" >> $GITHUB_OUTPUT
           echo "version=$version" >> $GITHUB_OUTPUT
-
-      - name: Validate IPA URL
-        if: ${{ inputs.ipa_url }}
-        run: |
-          curl -L -r 0-1023 -o sample.part "${{ inputs.ipa_url }}" > /dev/null 2>&1
-          file_type=$(file --mime-type -b sample.part)
-
-          if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
-            echo "::error::Validation failed: The file is not a valid IPA file. Detected type: $file_type."
-            exit 1
-          fi
 
       - name: Install Dependencies
         run: brew install make ldid
@@ -97,30 +86,10 @@ jobs:
       - name: Install cyan
         run: pipx install --force https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
 
-      - name: Download IPA (Auto)
-        if: ${{ !inputs.ipa_url }}
-        uses: level3tjg/decryptedappstore-action@main
-        with:
-          appstore_url: "https://apps.apple.com/us/app/twitch-live-streaming/id460177396"
-          cache: true
-          path: ${{ github.workspace }}/App.ipa
-          token: ${{ secrets.DECRYPTEDAPPSTORE_SESSION_TOKEN }}
-
-      - name: Download IPA (Manual)
-        if: ${{ inputs.ipa_url }}
+      - name: Download IPA
         run: |
           curl -Lo "${{ github.workspace }}/App.ipa" "${{ inputs.ipa_url }}"
           zip -T "${{ github.workspace }}/App.ipa"
-
-      - name: Download STS IPA
-        run: |
-          curl -Lo "${{ github.workspace }}/STS.ipa" "https://nextcloud.level3tjg.me/s/b2WcDdDMN3ZXkYf/download/tv.twitch_19.4.ipa"
-          zip -T "${{ github.workspace }}/STS.ipa"
-
-      - name: Download LTS IPA
-        run: |
-          curl -Lo "${{ github.workspace }}/LTS.ipa" "https://nextcloud.level3tjg.me/s/QEyiJD3FK6AfxTA/download/tv.twitch_12.8.1.ipa"
-          zip -T "${{ github.workspace }}/LTS.ipa"
 
       - name: Get IPA Info
         id: ipa_info
@@ -144,21 +113,8 @@ jobs:
 
       - name: Build IPA with cyan
         run: |
-          # Créer le deb depuis le build précédent
           deb_file=$(find packages -name "*.deb" | head -1)
-          
-          # Utiliser cyan pour injecter le tweak
           cyan -i "${{ github.workspace }}/App.ipa" -o "packages/TwitchPlus_${{ steps.package_info.outputs.version }}.ipa" -uwef "$deb_file" -n "${{ inputs.display_name || 'Twitch' }}" -b "${{ inputs.bundle_id || 'tv.twitch' }}"
-
-      - name: Build STS IPA with cyan
-        run: |
-          deb_file=$(find packages -name "*.deb" | head -1)
-          cyan -i "${{ github.workspace }}/STS.ipa" -o "packages/TwitchPlusSTS_${{ steps.package_info.outputs.version }}.ipa" -uwef "$deb_file" -n "${{ inputs.display_name || 'Twitch' }}" -b "${{ inputs.bundle_id || 'tv.twitch' }}"
-
-      - name: Build LTS IPA with cyan
-        run: |
-          deb_file=$(find packages -name "*.deb" | head -1)
-          cyan -i "${{ github.workspace }}/LTS.ipa" -o "packages/TwitchPlusLTS_${{ steps.package_info.outputs.version }}.ipa" -uwef "$deb_file" -n "${{ inputs.display_name || 'Twitch' }}" -b "${{ inputs.bundle_id || 'tv.twitch' }}"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
