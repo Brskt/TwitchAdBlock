@@ -89,7 +89,6 @@ jobs:
       - name: Download IPA
         run: |
           curl -Lo "${{ github.workspace }}/App.ipa" "${{ inputs.ipa_url }}"
-          zip -T "${{ github.workspace }}/App.ipa"
 
       - name: Get IPA Info
         id: ipa_info
