@@ -1,0 +1,181 @@
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      ipa_url:
+        description: "Direct URL to Decrypted IPA file"
+        type: string
+        required: false
+      display_name:
+        description: "App Name (Optional)"
+        default: "TwitchPlus"
+        required: false
+        type: string
+      bundle_id:
+        description: "BundleID (Optional)"
+        default: "tv.twitch"
+        required: false
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Hide sensitive inputs
+        uses: levibostian/action-hide-sensitive-inputs@v1
+
+      - name: Get package info
+        id: package_info
+        run: |
+          version=$(cat Makefile | grep "PACKAGE_VERSION =" | cut -d' ' -f3)
+          if [ -z $version ]; then
+            version=$(cat control | grep "Version:" | cut -d' ' -f2)
+          fi
+          echo "id=$(cat control | grep "Package:" | cut -d' ' -f2)" >> $GITHUB_OUTPUT
+          echo "version=$version" >> $GITHUB_OUTPUT
+
+      - name: Validate IPA URL
+        if: ${{ inputs.ipa_url }}
+        run: |
+          curl -L -r 0-1023 -o sample.part "${{ inputs.ipa_url }}" > /dev/null 2>&1
+          file_type=$(file --mime-type -b sample.part)
+
+          if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
+            echo "::error::Validation failed: The file is not a valid IPA file. Detected type: $file_type."
+            exit 1
+          fi
+
+      - name: Install Dependencies
+        run: brew install make ldid
+
+      - name: Set PATH environment variable
+        run: echo "$(brew --prefix make)/libexec/gnubin" >> $GITHUB_PATH
+
+      - name: Cache Theos
+        id: theos
+        uses: actions/cache@v4
+        env:
+          cache-name: theos_cache_67db2ab
+        with:
+          path: theos/
+          key: ${{ env.cache-name }}
+          restore-keys: ${{ env.cache-name }}
+
+      - name: Setup Theos
+        if: steps.theos.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4.1.7
+        with:
+          repository: theos/theos
+          ref: 67db2ab8d950910161730de77c322658ea3e6b44
+          path: ${{ github.workspace }}/theos
+          submodules: recursive
+
+      - name: Download iOS SDK
+        if: steps.theos.outputs.cache-hit != 'true'
+        run: |
+          git clone --quiet -n --depth=1 --filter=tree:0 https://github.com/theos/sdks/
+          cd sdks
+          git sparse-checkout set --no-cone iPhoneOS16.5.sdk
+          git checkout
+          mv *.sdk $THEOS/sdks
+        env:
+          THEOS: ${{ github.workspace }}/theos
+
+      - name: Install cyan
+        run: pipx install --force https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+
+      - name: Download IPA (Auto)
+        if: ${{ !inputs.ipa_url }}
+        uses: level3tjg/decryptedappstore-action@main
+        with:
+          appstore_url: "https://apps.apple.com/us/app/twitch-live-streaming/id460177396"
+          cache: true
+          path: ${{ github.workspace }}/App.ipa
+          token: ${{ secrets.DECRYPTEDAPPSTORE_SESSION_TOKEN }}
+
+      - name: Download IPA (Manual)
+        if: ${{ inputs.ipa_url }}
+        run: |
+          curl -Lo "${{ github.workspace }}/App.ipa" "${{ inputs.ipa_url }}"
+          zip -T "${{ github.workspace }}/App.ipa"
+
+      - name: Download STS IPA
+        run: |
+          curl -Lo "${{ github.workspace }}/STS.ipa" "https://nextcloud.level3tjg.me/s/b2WcDdDMN3ZXkYf/download/tv.twitch_19.4.ipa"
+          zip -T "${{ github.workspace }}/STS.ipa"
+
+      - name: Download LTS IPA
+        run: |
+          curl -Lo "${{ github.workspace }}/LTS.ipa" "https://nextcloud.level3tjg.me/s/QEyiJD3FK6AfxTA/download/tv.twitch_12.8.1.ipa"
+          zip -T "${{ github.workspace }}/LTS.ipa"
+
+      - name: Get IPA Info
+        id: ipa_info
+        run: |
+          info=$(unzip -p "${{ github.workspace }}/App.ipa" Payload/*.app/Info.plist)
+          echo "bundle-id=$(echo $info | xmlstarlet sel -t -v "/plist/dict/key[text()=\"CFBundleIdentifier\"]/following-sibling::*[1]/text()")" >> $GITHUB_OUTPUT
+          echo "version=$(echo $info | xmlstarlet sel -t -v "/plist/dict/key[text()=\"CFBundleShortVersionString\"]/following-sibling::*[1]/text()")" >> $GITHUB_OUTPUT
+
+      - name: Build rootless deb
+        run: make package
+        env:
+          FINALPACKAGE: 1
+          THEOS_PACKAGE_SCHEME: rootless
+          THEOS: ${{ github.workspace }}/theos
+
+      - name: Build rootful deb
+        run: make clean package
+        env:
+          FINALPACKAGE: 1
+          THEOS: ${{ github.workspace }}/theos
+
+      - name: Build IPA with cyan
+        run: |
+          # Créer le deb depuis le build précédent
+          deb_file=$(find packages -name "*.deb" | head -1)
+          
+          # Utiliser cyan pour injecter le tweak
+          cyan -i "${{ github.workspace }}/App.ipa" -o "packages/TwitchPlus_${{ steps.package_info.outputs.version }}.ipa" -uwef "$deb_file" -n "${{ inputs.display_name || 'Twitch' }}" -b "${{ inputs.bundle_id || 'tv.twitch' }}"
+
+      - name: Build STS IPA with cyan
+        run: |
+          deb_file=$(find packages -name "*.deb" | head -1)
+          cyan -i "${{ github.workspace }}/STS.ipa" -o "packages/TwitchPlusSTS_${{ steps.package_info.outputs.version }}.ipa" -uwef "$deb_file" -n "${{ inputs.display_name || 'Twitch' }}" -b "${{ inputs.bundle_id || 'tv.twitch' }}"
+
+      - name: Build LTS IPA with cyan
+        run: |
+          deb_file=$(find packages -name "*.deb" | head -1)
+          cyan -i "${{ github.workspace }}/LTS.ipa" -o "packages/TwitchPlusLTS_${{ steps.package_info.outputs.version }}.ipa" -uwef "$deb_file" -n "${{ inputs.display_name || 'Twitch' }}" -b "${{ inputs.bundle_id || 'tv.twitch' }}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package_info.outputs.id }}_${{ steps.package_info.outputs.version }}
+          path: packages/*
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: packages/*
+          tag_name: v${{ steps.ipa_info.outputs.version }}-${{ steps.package_info.outputs.version }}
+          name: TwitchPlus v${{ steps.package_info.outputs.version }} (${{ github.run_number }})
+
+      - name: Output Release URL
+        env:
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          echo "::notice::Release available at: ${REPO_URL}/releases"
