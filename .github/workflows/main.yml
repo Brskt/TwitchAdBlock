@@ -1,4 +1,4 @@
-name: CI
+name: Build Twitch app
 
 on:
   push:
